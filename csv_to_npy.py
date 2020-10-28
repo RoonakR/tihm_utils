@@ -6,7 +6,7 @@ import sys
 from configuration import Conf
 import argparse
 import os
-from utils import save_mkdir, save_obj, load_obj
+from util import save_mkdir, save_obj, parser_bool
 
 # TODO
 """
@@ -31,6 +31,7 @@ def get_args(argv):
     parser.add_argument('--split_label', type=bool, default=False,
                         help='split labelled data from unlabelled data or not')
     parser.add_argument('--freq', type=str, default='H', help='frequency to sum the data.')
+    parser.add_argument('--extract_uti_phase', type=bool, default=False, help='extract the pre and post phase of UTI')
 
     args = parser.parse_args(argv)
     return args
@@ -51,7 +52,7 @@ class Data_loader(object):
         self.save_per_patient = args.save_per_patient
         self.extract_incident = args.extract_incident
         self.save_dir = args.save_dir
-        self.label_previous_day = args.label_previous_day
+        self.label_previous_day = False #args.label_previous_day
         if self.patient_id is not None and self.test_date is None:
             raise ValueError('test date must be provided')
         self.env_feat_list = {
@@ -70,6 +71,8 @@ class Data_loader(object):
             self.incident = ['UTI symptoms']
         elif args.incident == 'Agitation':
             self.incident = ['Agitation']
+
+        assert not (self.label_previous_day and self.args.extract_uti_phase), 'only one of them can be True'
 
     def load_body_temp(self, filename, date_his):
         try:
@@ -162,16 +165,18 @@ class Data_loader(object):
                 test_id = int(f.split('_')[0])
                 self.data[test_id] = []
                 cur_date = self.test_date[self.patient_id.index(test_id)]
-                for date_time in self.find_previous_day(cur_date, 7):
+                for date_time in self.get_consecutive_date(cur_date, 7):
                     day = date_his.index(date_time)
                     self.data[test_id].append((data[day], bt_data[day]))
             elif self.save_per_patient:
                 test_id = int(f.split('_')[0])
                 if self.extract_incident:
-                    label, incident_info = self.load_label(f, date_his)
-                    data = data[label < 2]
-                    if np.sum(label < 2) > 0:
-                        incident_info = incident_info[label < 2]
+                    patient_label, incident_info = self.load_label(f, date_his)
+                    label.append(patient_label)
+                    result.append(data)
+                    data = data[patient_label < 4 if self.args.extract_uti_phase else 2]
+                    if np.sum(patient_label < 4 if self.args.extract_uti_phase else 2) > 0:
+                        incident_info = incident_info[patient_label < 4 if self.args.extract_uti_phase else 2]
                         self.data[test_id] = [data, incident_info]
                 elif self.verbose:
                     self.data[test_id] = [data, bt_data, date_his, self.load_label(f, date_his)]
@@ -194,6 +199,13 @@ class Data_loader(object):
                 pass
             if self.args.split_label:
                 self.split_label_unlabel()
+        if self.args.extract_uti_phase:
+            self.data['_label'] = np.concatenate(label)
+            self.data['env_data'] = np.concatenate(result)
+            self.data['uti_data'] = self.data['env_data'][self.data['_label'] == 1]
+            for incident in [2, 3]:
+                indices = self.data['_label'] == incident
+                self.data['pre_uti' if incident == 2 else 'post_uti'] = self.data['env_data'][indices]
 
     def save_data(self):
         for key, value in self.data.items():
@@ -214,10 +226,10 @@ class Data_loader(object):
                 continue
         return file_list
 
-    def find_previous_day(self, today, date_range):
+    def get_consecutive_date(self, today, date_range, previous_day=True):
         today = datetime.date(*map(int, today.split('-')))
         for i in range(date_range):
-            today = today - datetime.timedelta(1)
+            today = today - datetime.timedelta(1) if previous_day else today + datetime.timedelta(1)
             yield str(today)
 
     @abstractmethod
@@ -260,8 +272,10 @@ class Env_loader(Data_loader):
         """
         0 - False
         1 - True
-        2 - not valid
-        3 - Test samples
+        2 - days before uti infections
+        3 - days after uti infections
+        4 - not valid
+        5 - Test samples
         """
         filename = list(file)
         filename = ''.join(filename)
@@ -270,7 +284,7 @@ class Env_loader(Data_loader):
         sub_key = 'datetimeObserved'
         label_df = pd.read_csv(self.conf.data_path['flag'] + filename)
         label_df = self.mark_incident(label_df, int(file.split('_')[0]))
-        label = np.zeros(len(date_his)) + 2
+        label = np.zeros(len(date_his)) + 4
         incident_info = [[None, None, None]] * len(label)
         indices = label_df['element'].isin(self.incident)
         if len(indices) > 0:
@@ -285,40 +299,46 @@ class Env_loader(Data_loader):
                         idx = date_his.index(today)
                         get_idx = False
                     except ValueError:
-                        today = next(self.find_previous_day(today, 1))
+                        today = next(self.get_consecutive_date(today, 1))
                 try:
-                    if valid[d] == 'False' or valid[d] is False:
-                        label[idx] = 0
-                        incident_info[idx] = [dates[d], sub_df['element'].to_numpy()[d], False]
-
+                    validation = parser_bool(valid[d])
+                    if validation is None:
+                        label[idx] = 4
+                    else:
+                        settings = self.conf.reading_settings(validation)
+                        label[idx] = settings['label']
+                        incident_info[idx] = [dates[d], sub_df['element'].to_numpy()[d], settings['label'],
+                                              int(file.split('_')[0])]
                         if self.incident == ['UTI symptoms'] and self.label_previous_day:
-                            for new_day in self.find_previous_day(dates[d], 1):
-                                new_idx = date_his.index(new_day)
-                                label[new_idx] = 0
-                                incident_info[new_idx] = [new_day, sub_df['element'].to_numpy()[d], False,
-                                                          int(file.split('_')[0])]
-
-                    elif valid[d] == 'True' or valid[d] is True:
-                        label[idx] = 1
-                        incident_info[idx] = [dates[d], sub_df['element'].to_numpy()[d], True]
-                        if self.incident == ['UTI symptoms'] and self.label_previous_day:
-                            for new_day in self.find_previous_day(dates[d], 2):
+                            for new_day in self.get_consecutive_date(dates[d], settings['extend_label_range']):
                                 try:
                                     new_idx = date_his.index(new_day)
-                                    label[new_idx] = 1
-                                    incident_info[new_idx] = [new_day, sub_df['element'].to_numpy()[d], True]
+                                    label[new_idx] = settings['label']
+                                    incident_info[new_idx] = [new_day, sub_df['element'].to_numpy()[d],
+                                                              settings['label'], int(file.split('_')[0])]
                                 except ValueError:
                                     pass
-                    else:
-                        label[idx] = 2
+                        if self.incident == ['UTI symptoms'] and self.args.extract_uti_phase and validation:
+                            uti_flags = [True, False]  # True: previous days, False: following days
+                            for date_flag in uti_flags:
+                                for new_day in self.get_consecutive_date(dates[d], settings['uti_pre_post_range'],
+                                                                         previous_day=date_flag):
+                                    try:
+                                        new_idx = date_his.index(new_day)
+                                        label[new_idx] = 2 + int(date_flag)
+                                        incident_info[new_idx] = [new_day, sub_df['element'].to_numpy()[d],
+                                                                  settings['label'], int(file.split('_')[0])]
+                                    except ValueError:
+                                        pass
                 except KeyError:
                     pass
+
         if self.extract_incident:
             return label, np.array(incident_info)
         return label
 
     def split_label_unlabel(self):
-        indices = self.data['_label'] == 2
+        indices = self.data['_label'] == 4
         self.data['unlabel_env'] = self.data['env_data'][indices]
         try:
             self.data['unlabel_bodytemp'] = self.data['bodytemp'][indices]

@@ -1,3 +1,5 @@
+from util import parser_bool
+
 class Conf(object):
     def __init__(self, args):
         self.args = args
@@ -29,6 +31,15 @@ class Conf(object):
             'clinical': self._set_path('csv_data') + '/clinical/data/',
         }
         return data_path
+
+    def reading_settings(self, validation):
+        validation = parser_bool(validation)
+        return {
+            'label': True if validation else False,
+            'extend_label_range': 2 if validation else 1,
+            'valid': True if validation else False,
+            'uti_pre_post_range': 3 if validation else 0
+        }
 
 
 # Validated UTI, may not in the flags files
