@@ -21,7 +21,7 @@ def get_args(argv):
     parser.add_argument('--patient_id', type=int, default=None, nargs="+", help='list of patients to read')
     parser.add_argument('--incident', type=str, default='UTI', help='UTI | Agitation | all',
                         choices=('UTI', 'Agitation', 'all'))
-    parser.add_argument('--test_date', type=str, default=None, nargs="+", help='infection date')
+    parser.add_argument('--patient_test_date', type=str, default=None, nargs="+", help='infection date')
     parser.add_argument('--verbose', type=bool, default=False, help='insert the patient id and date into the data')
     parser.add_argument('--save_per_patient', type=bool, default=False, help='save the data per patient')
     parser.add_argument('--extract_incident', type=bool, default=False, help='extract incident only')
@@ -32,6 +32,8 @@ def get_args(argv):
                         help='split labelled data from unlabelled data or not')
     parser.add_argument('--freq', type=str, default='H', help='frequency to sum the data.')
     parser.add_argument('--extract_uti_phase', type=bool, default=False, help='extract the pre and post phase of UTI')
+    parser.add_argument('--test_date', type=str, default=None, help='extract the data after the test date as test '
+                                                                    'data, format: year-month-day')
 
     args = parser.parse_args(argv)
     return args
@@ -46,14 +48,14 @@ class Data_loader(object):
         self.conf = Conf(args)
         self.args = args
         self.patient_id = args.patient_id
-        self.test_date = args.test_date
+        self.patient_test_date = args.patient_test_date
         self.data = {}
         self.verbose = args.verbose
         self.save_per_patient = args.save_per_patient
         self.extract_incident = args.extract_incident
         self.save_dir = args.save_dir
-        self.label_previous_day = False #args.label_previous_day
-        if self.patient_id is not None and self.test_date is None:
+        self.label_previous_day = args.label_previous_day
+        if self.patient_id is not None and self.patient_test_date is None:
             raise ValueError('test date must be provided')
         self.env_feat_list = {
             0: ['Fridge'],
@@ -73,6 +75,14 @@ class Data_loader(object):
             self.incident = ['Agitation']
 
         assert not (self.label_previous_day and self.args.extract_uti_phase), 'only one of them can be True'
+
+        path = self.conf.npy_data
+        if self.save_dir is not None:
+            path = path + '/' + self.save_dir
+        save_mkdir(path)
+
+        self.load_env()
+        self.save_data()
 
     def load_body_temp(self, filename, date_his):
         try:
@@ -103,6 +113,8 @@ class Data_loader(object):
         result = []
         bodytemp = []
         label = []
+        info_date = []
+        info_id = []
         filenames = self._iter_directory(self.conf.data_path['env'])
 
         for f in filenames:
@@ -164,7 +176,7 @@ class Data_loader(object):
             if self.patient_id is not None:
                 test_id = int(f.split('_')[0])
                 self.data[test_id] = []
-                cur_date = self.test_date[self.patient_id.index(test_id)]
+                cur_date = self.patient_test_date[self.patient_id.index(test_id)]
                 for date_time in self.get_consecutive_date(cur_date, 7):
                     day = date_his.index(date_time)
                     self.data[test_id].append((data[day], bt_data[day]))
@@ -174,17 +186,21 @@ class Data_loader(object):
                     patient_label, incident_info = self.load_label(f, date_his)
                     label.append(patient_label)
                     result.append(data)
-                    data = data[patient_label < 4 if self.args.extract_uti_phase else 2]
-                    if np.sum(patient_label < 4 if self.args.extract_uti_phase else 2) > 0:
-                        incident_info = incident_info[patient_label < 4 if self.args.extract_uti_phase else 2]
+                    data = data[patient_label < 4 if self.args.extract_uti_phase else patient_label < 2]
+                    if np.sum(patient_label < 4 if self.args.extract_uti_phase else patient_label < 2) > 0:
+                        incident_info = incident_info[
+                            patient_label < 4 if self.args.extract_uti_phase else patient_label < 2]
                         self.data[test_id] = [data, incident_info]
                 elif self.verbose:
-                    self.data[test_id] = [data, bt_data, date_his, self.load_label(f, date_his)]
+                    self.data[test_id] = [data, bt_data, date_his, self.load_label(f, date_his)[0]]
                 else:
                     self.data[test_id] = [data, date_his]
             else:
                 result.append(data)
-                label.append(self.load_label(f, date_his))
+                l, patient_info = self.load_label(f, date_his)
+                label.append(l)
+                info_date += patient_info[0]
+                info_id += patient_info[1]
                 bodytemp.append(bt_data)
 
         if self.save_per_patient or self.patient_id is not None:
@@ -197,6 +213,9 @@ class Data_loader(object):
                 self.data['bodytemp'] = np.concatenate(bodytemp)
             except ValueError:
                 pass
+            if self.args.test_date is not None:
+                self.data['Patient_id'] = np.array(info_id)
+                self.data['Date'] = np.array(info_date)
             if self.args.split_label:
                 self.split_label_unlabel()
         if self.args.extract_uti_phase:
@@ -207,6 +226,7 @@ class Data_loader(object):
                 indices = self.data['_label'] == incident
                 self.data['pre_uti' if incident == 2 else 'post_uti'] = self.data['env_data'][indices]
 
+
     def save_data(self):
         for key, value in self.data.items():
             if key not in ['env_data', 'bodytemp', '_label']:
@@ -214,7 +234,6 @@ class Data_loader(object):
                 path = self.conf.npy_data
                 if self.save_dir is not None:
                     path = path + '/' + self.save_dir
-                save_mkdir(path)
                 save_obj(value, path + '/' + str(key))
 
     def _iter_directory(self, directory):
@@ -233,7 +252,7 @@ class Data_loader(object):
             yield str(today)
 
     @abstractmethod
-    def load_label(self):
+    def load_label(self, file, date_his):
         pass
 
     @abstractmethod
@@ -285,6 +304,11 @@ class Env_loader(Data_loader):
         label_df = pd.read_csv(self.conf.data_path['flag'] + filename)
         label_df = self.mark_incident(label_df, int(file.split('_')[0]))
         label = np.zeros(len(date_his)) + 4
+        patient_info = [date_his, [p_id] * len(date_his)]
+        if self.args.test_date is not None:
+            test_indices = pd.to_datetime(date_his) > self.args.test_date
+            label[test_indices] = 5
+
         incident_info = [[None, None, None]] * len(label)
         indices = label_df['element'].isin(self.incident)
         if len(indices) > 0:
@@ -310,32 +334,38 @@ class Env_loader(Data_loader):
                         incident_info[idx] = [dates[d], sub_df['element'].to_numpy()[d], settings['label'],
                                               int(file.split('_')[0])]
                         if self.incident == ['UTI symptoms'] and self.label_previous_day:
-                            for new_day in self.get_consecutive_date(dates[d], settings['extend_label_range']):
-                                try:
-                                    new_idx = date_his.index(new_day)
-                                    label[new_idx] = settings['label']
-                                    incident_info[new_idx] = [new_day, sub_df['element'].to_numpy()[d],
-                                                              settings['label'], int(file.split('_')[0])]
-                                except ValueError:
-                                    pass
-                        if self.incident == ['UTI symptoms'] and self.args.extract_uti_phase and validation:
-                            uti_flags = [True, False]  # True: previous days, False: following days
-                            for date_flag in uti_flags:
-                                for new_day in self.get_consecutive_date(dates[d], settings['uti_pre_post_range'],
-                                                                         previous_day=date_flag):
+                            for flag in [True, False]:  # consecutive_label
+                                for new_day in self.get_consecutive_date(dates[d],
+                                                                         settings['extend_label_range'], flag):
                                     try:
                                         new_idx = date_his.index(new_day)
-                                        label[new_idx] = 2 + int(date_flag)
+                                        label[new_idx] = settings['label']
                                         incident_info[new_idx] = [new_day, sub_df['element'].to_numpy()[d],
                                                                   settings['label'], int(file.split('_')[0])]
                                     except ValueError:
                                         pass
+                        if self.incident == ['UTI symptoms'] and self.args.extract_uti_phase:
+                            uti_flags = [True, False]  # True: previous days, False: following days
+                            for date_flag in uti_flags:
+                                for idx, new_day in enumerate(
+                                        self.get_consecutive_date(dates[d], settings['uti_pre_post_range'],
+                                                                  previous_day=date_flag)):
+                                    try:
+                                        new_idx = date_his.index(new_day)
+                                        label[new_idx] = 1 if idx < settings['extra_uti_range'] - 1 else 2 + int(
+                                            date_flag)
+                                        incident_info[new_idx] = [new_day, str(label[new_idx]) +
+                                                                  sub_df['element'].to_numpy()[d],
+                                                                  settings['label'], int(file.split('_')[0])]
+                                    except ValueError:
+                                        pass
+
                 except KeyError:
                     pass
 
         if self.extract_incident:
             return label, np.array(incident_info)
-        return label
+        return label, patient_info
 
     def split_label_unlabel(self):
         indices = self.data['_label'] == 4
@@ -353,9 +383,16 @@ class Env_loader(Data_loader):
             pass
         self.data['label'] = self.data['_label'][indices]
 
+        if self.args.test_date is not None:
+            indices = self.data['_label'] == 5
+            self.data['test_data'] = [self.data['env_data'][indices], self.data['Patient_id'][indices],
+                                      self.data['Date'][indices]]
+            try:
+                self.data['test_body_temperature'] = self.data['bodytemp'][indices]
+            except KeyError:
+                pass
+
 
 if __name__ == '__main__':
     args = get_args(sys.argv[1:])
     dataloader = Env_loader(args)
-    dataloader.load_env()
-    dataloader.save_data()

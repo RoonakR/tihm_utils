@@ -1,5 +1,6 @@
 import os
 import pickle
+from pathlib import Path
 
 
 def save_obj(obj, name):
@@ -13,15 +14,16 @@ def load_obj(name):
 
 
 def save_mkdir(path):
-    try:
-        os.stat(path)
-    except:
-        os.mkdir(path)
+    Path(path).mkdir(parents=True, exist_ok=True)
+    # try:
+    #     os.stat(path)
+    # except:
+    #     os.mkdir(path)
 
 
 def parser_bool(flag):
-    if flag == 'True' or True:
+    if flag == 'True' or flag is True:
         return True
-    elif flag == 'False' or False:
+    elif flag == 'False' or flag is False:
         return False
     return None

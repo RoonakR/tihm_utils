@@ -3,6 +3,7 @@ import sys
 from configuration import Conf
 import argparse
 from copy import deepcopy
+from util import save_mkdir
 
 
 def get_args(argv):
@@ -18,6 +19,8 @@ def split_data(args):
     conf = Conf(args)
     base_path = conf.raw_data
     save_path = conf.csv_data
+    save_mkdir(save_path + '/' + data_type + '/data/')
+    save_mkdir(save_path + '/' + data_type + '/flag/')
 
     patients = pd.read_csv(base_path + '/Patients.csv')
     ids = patients['subjectId']
@@ -129,4 +132,6 @@ def split_data(args):
 
 if __name__ == '__main__':
     args = get_args(sys.argv[1:])
+    split_data(args)
+    args.data_type = 'env'
     split_data(args)

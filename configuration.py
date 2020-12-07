@@ -1,5 +1,6 @@
 from util import parser_bool
 
+
 class Conf(object):
     def __init__(self, args):
         self.args = args
@@ -36,9 +37,10 @@ class Conf(object):
         validation = parser_bool(validation)
         return {
             'label': True if validation else False,
-            'extend_label_range': 2 if validation else 1,
+            'extend_label_range': 1 if validation else 1,
             'valid': True if validation else False,
-            'uti_pre_post_range': 3 if validation else 0
+            'uti_pre_post_range': 3 if validation else 3,  # 10 days: 15,
+            'extra_uti_range': 1 if validation else 1,  # 10 days: 5,
         }
 
 
@@ -46,7 +48,11 @@ class Conf(object):
 
 def validated_date():
     patient_data = {
-        '1077': ['2020-10-06'],
-        '1313': ['2020-10-06'],
+        1077: [('2020-10-06', True), ('2020-11-17', True)],
+        1313: [('2020-01-24', True), ('2020-10-06', True)],
+        1021: [('2020-04-20', True)],
+        1126: [('2020-04-20', True)],
+        1287: [('2020-10-21', True)],
+
     }
     return patient_data
