@@ -16,6 +16,12 @@ create the directory tree like this
             |`- env
             |`- clinical
 ```
+Dependencies:
+```
+panda
+numpy
+pickle
+```
 run
 `python split_raw_to_csv.py` to split the raw data into data per patient. It can read the environmental and clinical data. Thanks for Ronnak's help.
 
